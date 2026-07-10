@@ -1,0 +1,13 @@
+# File esclusi dall'upload del deploy "da sorgente" su Cloud Run.
+.git/
+.github/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+*.md
+context.txt
+.env
+*.log
+deploy.sh
