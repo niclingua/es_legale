@@ -9,8 +9,15 @@ from app import app
 client = TestClient(app)
 
 
-def test_health():
+def test_root_serves_html():
     r = client.get("/")
+    assert r.status_code == 200
+    assert "text/html" in r.headers["content-type"]
+    assert "Iris Classifier" in r.text
+
+
+def test_health():
+    r = client.get("/health")
     assert r.status_code == 200
     body = r.json()
     assert body["status"] == "ok"

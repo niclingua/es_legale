@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/niclingua/es_legale/actions/workflows/ci.yml/badge.svg)](https://github.com/niclingua/es_legale/actions/workflows/ci.yml)
 
-🌐 **Live demo:** https://es-legale.onrender.com — prova [`/docs`](https://es-legale.onrender.com/docs)
+🌐 **Live demo:** https://es-legale.onrender.com — web-app con form · [`/docs`](https://es-legale.onrender.com/docs)
 
 Servizio REST che classifica i fiori **Iris** (setosa / versicolor / virginica) a partire
 dalle 4 misure del fiore. Il modello (scikit-learn `LogisticRegression`) viene **addestrato
@@ -16,7 +16,8 @@ CLIENT (curl / browser)
         │ HTTP (REST/JSON)
         ▼
 FastAPI app (app.py)
-  GET  /         → health / stato
+  GET  /         → mini web-app (pagina HTML con form)
+  GET  /health   → health / stato (JSON)
   POST /predict  → validazione Pydantic → model.predict()
         │ carica all'avvio
         ▼
@@ -37,15 +38,17 @@ Principio guida: **separazione training / serving**. `train.py` produce l'artefa
 docker compose up --build
 ```
 
-L'API sarà disponibile su `http://localhost:8000`.
+Poi apri nel browser `http://localhost:8000` per la **mini web-app** (form di predizione).
 Documentazione interattiva Swagger: `http://localhost:8000/docs`.
 
 ## Esempi d'uso
 
-Stato del servizio:
+Mini web-app (pagina HTML con form): apri `http://localhost:8000/` nel browser.
+
+Stato del servizio (health check JSON):
 
 ```bash
-curl http://localhost:8000/
+curl http://localhost:8000/health
 # {"status":"ok","model_loaded":true}
 ```
 
@@ -152,10 +155,10 @@ curl -X POST <URL_PUBBLICO>/predict -H "Content-Type: application/json" \
 
 **URL pubblico del deploy:** https://es-legale.onrender.com
 
-Prova rapida:
+Apri l'URL nel browser per usare la **web-app** (form). Prova via terminale:
 
 ```bash
-curl https://es-legale.onrender.com/
+curl https://es-legale.onrender.com/health
 # {"status":"ok","model_loaded":true}
 
 curl -X POST https://es-legale.onrender.com/predict -H "Content-Type: application/json" \
