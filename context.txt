@@ -1,0 +1,468 @@
+# Piano di progettazione — ML API (Iris) con FastAPI, Docker & Cloud Run
+
+> Documento di progettazione tecnica. Ruolo: PM / Software Engineer / AI Architect.
+> Obiettivo: guidare passo-passo la costruzione del servizio, dalle decisioni architetturali alla consegna finale.
+
+---
+
+## 0. Sintesi delle decisioni architetturali (da leggere PRIMA di scrivere codice)
+
+Prima di aprire l'editor, fissa queste decisioni. Sono i punti dove la maggior parte dei progetti simili si blocca a metà.
+
+| # | Decisione | Scelta consigliata | Perché |
+|---|-----------|--------------------|--------|
+| D1 | Framework serving | FastAPI + Uvicorn | Async, validazione automatica con Pydantic, doc OpenAPI gratuite su `/docs` |
+| D2 | Modello ML | `LogisticRegression` (o `RandomForestClassifier`) di scikit-learn | Iris è linearmente quasi separabile; LogReg è leggero, deterministico con `random_state`, veloce da addestrare al build |
+| D3 | Serializzazione | `joblib` | Standard per oggetti scikit-learn (più efficiente di pickle sugli array NumPy) |
+| D4 | Quando si addestra | Al **build** dell'immagine (`RUN python train.py`) | Il brief lo richiede; il modello finisce dentro l'immagine → deploy autoconsistente |
+| D5 | Porta di ascolto | Leggere da variabile `PORT`, default `8000` | Concilia il requisito "porta 8000" in locale con Cloud Run che inietta `PORT=8080` (vedi criticità C1) |
+| D6 | Base image | `python:3.12-slim` | Piccola, sicura, ampiamente supportata. NON `alpine` (musl crea problemi con le wheel di NumPy/scikit-learn) |
+| D7 | Utente container | Non-root | Best practice di sicurezza; richiesto di fatto da molte piattaforme |
+| D8 | Deploy | Google Cloud Run (deploy dell'immagine) | Serverless, scala a zero, free tier generoso. Alternative: Render / HF Spaces |
+
+> ⚠️ **Le criticità C1–C4 (in fondo) vanno risolte adesso**, non a progetto avviato: due di esse (`PORT` e `model.joblib`) determinano codice e struttura del repo.
+
+---
+
+## Architettura logica (visione d'insieme)
+
+```
+                    ┌─────────────────────────────────────────────┐
+                    │                CLIENT (curl / browser)       │
+                    └───────────────┬─────────────────────────────┘
+                                    │ HTTP (REST/JSON)
+                    ┌───────────────▼─────────────────────────────┐
+                    │           FastAPI app  (app.py)              │
+                    │   GET  /          → health/stato             │
+                    │   POST /predict   → validazione Pydantic     │
+                    │                     → model.predict()        │
+                    └───────────────┬─────────────────────────────┘
+                                    │ carica all'avvio
+                    ┌───────────────▼─────────────────────────────┐
+                    │   model.joblib  (prodotto da train.py)       │
+                    └──────────────────────────────────────────────┘
+
+ Build/Runtime:  Dockerfile → (RUN train.py → model.joblib) → CMD uvicorn app:app
+ Orchestrazione locale:  compose.yaml (build + port + env + volume)
+ Versioning:  Git → GitHub (branch feature → Pull Request → main)
+ Deploy:  immagine → Cloud Run → URL pubblico
+```
+
+Principio guida: **separazione training / serving**. `train.py` produce l'artefatto; `app.py` lo consuma e non riaddestra mai a runtime. Questo rende l'API veloce, prevedibile e testabile.
+
+---
+
+## FASE 0 — Prerequisiti e setup ambiente
+
+**Cosa creare:** nulla ancora. Verifichi solo l'ambiente.
+
+**Come:**
+1. Installare/verificare: Python 3.12+, Docker + Docker Compose (`docker compose version`), Git, un account GitHub, Google Cloud SDK (`gcloud`).
+2. Creare la cartella di lavoro `ml-api-iris/`.
+3. Creare un virtualenv locale **solo per sviluppo** (non finisce nell'immagine):
+   ```bash
+   python -m venv .venv && source .venv/bin/activate
+   ```
+
+**Definition of Done (DoD):** `docker compose version` e `gcloud --version` rispondono; cartella creata.
+
+---
+
+## FASE 1 — Scaffolding del repository
+
+**Cosa creare:** struttura vuota dei file + `requirements.txt`.
+
+```
+ml-api-iris/
+├── app.py
+├── train.py
+├── requirements.txt
+├── Dockerfile
+├── compose.yaml
+├── .dockerignore
+├── .gitignore
+├── README.md
+├── tests/
+│   └── test_api.py          # opzionale ma consigliato
+└── model.joblib             # generato, NON scritto a mano
+```
+
+**`requirements.txt`** — versioni **pinnate** (riproducibilità = requisito valutativo implicito):
+```
+fastapi
+uvicorn[standard]
+scikit-learn
+joblib
+numpy
+pydantic
+# in fase 1 lasciale libere per installare, poi FISSA le versioni con `pip freeze`
+```
+> Best practice: dopo il primo `pip install`, esegui `pip freeze > requirements.txt` per bloccare le versioni esatte. Evita build che si rompono nel tempo.
+
+**DoD:** file presenti (anche vuoti); `requirements.txt` con versioni pinnate.
+
+---
+
+## FASE 2 — Addestramento del modello (`train.py`)
+
+**Cosa fa:** carica Iris, addestra un classificatore, salva `model.joblib`.
+
+**Come — scheletro di riferimento:**
+```python
+# train.py
+import os
+import joblib
+from sklearn.datasets import load_iris
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score
+
+MODEL_PATH = os.environ.get("MODEL_PATH", "model.joblib")
+
+def main() -> None:
+    X, y = load_iris(return_X_y=True)
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=0.2, random_state=42, stratify=y
+    )
+    model = LogisticRegression(max_iter=1000, random_state=42)
+    model.fit(X_tr, y_tr)
+    acc = accuracy_score(y_te, model.predict(X_te))
+    print(f"Test accuracy: {acc:.3f}")
+    joblib.dump(model, MODEL_PATH)
+    print(f"Modello salvato in {MODEL_PATH}")
+
+if __name__ == "__main__":
+    main()
+```
+
+**Scelte tecniche motivate:**
+- `random_state=42` e `max_iter=1000` → training **deterministico e convergente** (nessun warning, risultati riproducibili).
+- Salvi **solo il modello** (non i dati): Iris è built-in in scikit-learn.
+- Path da env `MODEL_PATH` → soddisfa il requisito "variabile d'ambiente" ed evita path hard-coded.
+
+**DoD:** `python train.py` stampa un'accuracy e crea `model.joblib`.
+
+---
+
+## FASE 3 — API REST (`app.py`)
+
+**Endpoint richiesti:** `GET /` (stato) e `POST /predict`.
+
+**Come — scheletro di riferimento:**
+```python
+# app.py
+import os
+import joblib
+import numpy as np
+from fastapi import FastAPI
+from pydantic import BaseModel, Field
+
+MODEL_PATH = os.environ.get("MODEL_PATH", "model.joblib")
+CLASS_NAMES = ["setosa", "versicolor", "virginica"]
+
+app = FastAPI(title="Iris Classifier API", version="1.0.0")
+model = joblib.load(MODEL_PATH)   # caricato una sola volta all'avvio
+
+class IrisFeatures(BaseModel):
+    sepal_length: float = Field(..., ge=0)
+    sepal_width:  float = Field(..., ge=0)
+    petal_length: float = Field(..., ge=0)
+    petal_width:  float = Field(..., ge=0)
+
+@app.get("/")
+def health():
+    return {"status": "ok", "model_loaded": model is not None}
+
+@app.post("/predict")
+def predict(features: IrisFeatures):
+    x = np.array([[features.sepal_length, features.sepal_width,
+                   features.petal_length, features.petal_width]])
+    idx = int(model.predict(x)[0])
+    return {"class_id": idx, "class_name": CLASS_NAMES[idx]}
+```
+
+**Scelte tecniche motivate:**
+- Pydantic valida i 4 valori numerici e rifiuta input malformati con 422 automatico → robustezza gratis.
+- Il modello si carica **una volta all'avvio** del processo (non a ogni richiesta) → latenza minima.
+- FastAPI espone automaticamente `/docs` (Swagger UI): utile come prova visiva del funzionamento.
+
+**DoD (test locale, fuori da Docker):**
+```bash
+uvicorn app:app --port 8000
+curl -X POST localhost:8000/predict -H "Content-Type: application/json" \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+# atteso → {"class_id":0,"class_name":"setosa"}
+```
+
+---
+
+## FASE 4 — Containerizzazione (`Dockerfile`)
+
+**Requisiti del brief:** immagine `python:slim`, install da `requirements.txt`, esecuzione del training, avvio con Uvicorn.
+
+**Come — Dockerfile di riferimento (con best practice integrate):**
+```dockerfile
+FROM python:3.12-slim
+
+# 1) Impostazioni Python pulite
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    MODEL_PATH=/app/model.joblib \
+    PORT=8000
+
+WORKDIR /app
+
+# 2) Dipendenze PRIMA del codice → sfrutta la cache dei layer
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# 3) Codice sorgente
+COPY train.py app.py ./
+
+# 4) Addestramento al build → model.joblib finisce nell'immagine
+RUN python train.py
+
+# 5) Utente non-root (sicurezza)
+RUN useradd --create-home appuser && chown -R appuser /app
+USER appuser
+
+EXPOSE 8000
+
+# 6) Avvio: ascolta sulla porta iniettata (Cloud Run) o 8000 in locale
+CMD ["sh", "-c", "uvicorn app:app --host 0.0.0.0 --port ${PORT}"]
+```
+
+**Ordine dei layer (importante):** `requirements` → `pip install` → codice → `train.py`. Così, se cambi solo `app.py`, Docker **non** reinstalla le dipendenze (build molto più veloci).
+
+> Nota su C1: `--port ${PORT}` con default `8000` fa funzionare sia il locale (8000) sia Cloud Run (8080, iniettata). Vedi criticità in fondo.
+
+**DoD:** `docker build -t iris-api .` completa senza errori.
+
+---
+
+## FASE 5 — Test del container
+
+**Come:**
+```bash
+docker build -t iris-api .
+docker run --rm -p 8000:8000 iris-api
+# in un'altra shell:
+curl localhost:8000/
+curl -X POST localhost:8000/predict -H "Content-Type: application/json" \
+  -d '{"sepal_length":6.7,"sepal_width":3.0,"petal_length":5.2,"petal_width":2.3}'
+# atteso → virginica
+```
+
+**DoD:** entrambi gli endpoint rispondono correttamente dal container.
+
+---
+
+## FASE 6 — Orchestrazione locale (`compose.yaml`)
+
+**Requisiti del brief:** build da Dockerfile, porta 8000, ≥1 variabile d'ambiente, ≥1 volume.
+
+**Come — compose di riferimento (env e volume resi *significativi*, non decorativi):**
+```yaml
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: "local"
+      MODEL_PATH: "/app/model.joblib"
+    volumes:
+      - model-data:/app/artifacts   # volume nominato: persistenza artefatti/log in locale
+    restart: unless-stopped
+
+volumes:
+  model-data:
+```
+
+**Scelte motivate:**
+- **Env var** `APP_ENV` / `MODEL_PATH`: soddisfano il requisito e sono realmente usate dal codice.
+- **Volume nominato** `model-data`: soddisfa il requisito. In un progetto reale lo useresti per persistere log o un modello riaddestrato tra i riavvii.
+- ⚠️ Vedi criticità C3: il volume ha senso **solo in locale**. Cloud Run non usa `compose.yaml` e ha filesystem effimero.
+
+**DoD:** `docker compose up` avvia tutto; l'API risponde su `localhost:8000`. Questo è il comando che il valutatore lancerà: deve funzionare **da zero**.
+
+---
+
+## FASE 7 — File di configurazione
+
+**`.dockerignore`** (immagine più piccola e build più veloce/sicura):
+```
+.venv/
+__pycache__/
+*.pyc
+.git/
+.gitignore
+README.md
+tests/
+.env
+*.md
+```
+
+**`.gitignore`**:
+```
+.venv/
+__pycache__/
+*.pyc
+.env
+*.log
+# model.joblib → vedi criticità C2: decidi se ignorarlo o committarlo
+```
+
+**`README.md`** — deve contenere almeno:
+- descrizione del progetto e dell'architettura,
+- prerequisiti,
+- comando unico di avvio (`docker compose up`),
+- esempi `curl` per `/` e `/predict`,
+- URL pubblico del deploy,
+- nota su come viene generato `model.joblib`,
+- sezione "nessuna credenziale nel repo".
+
+**DoD:** i tre file esistono e sono coerenti con il codice.
+
+---
+
+## FASE 8 — Versionamento con Git & GitHub (branch + Pull Request)
+
+Questo è un obiettivo valutativo esplicito: serve un **workflow reale**, non un singolo commit su `main`.
+
+**Come — sequenza consigliata:**
+```bash
+git init
+git add .
+git commit -m "chore: scaffolding progetto ML API"
+git branch -M main
+git remote add origin git@github.com:<utente>/ml-api-iris.git
+git push -u origin main
+
+# branch dedicato per una feature
+git checkout -b feature/predict-endpoint
+# ... lavori, committi ...
+git push -u origin feature/predict-endpoint
+```
+Poi su GitHub: **apri una Pull Request** `feature/predict-endpoint → main`, descrivi le modifiche, e **fai il merge** (integrazione). Il valutatore vuole vedere la PR completata.
+
+**Strategia consigliata (Trunk-based semplificato):**
+- `main` sempre funzionante,
+- un branch per feature (es. `feature/predict-endpoint`, `feature/docker`, `feature/deploy`),
+- PR con descrizione → merge.
+
+> 🔐 Requisito critico: **nessuna password/chiave nel repo**. Controlla la history prima di pubblicare. Se in futuro servissero segreti, usa `.env` (in `.gitignore`) in locale e Secret Manager / variabili di ambiente della piattaforma in cloud.
+
+**DoD:** repo su GitHub, ≥1 branch, ≥1 PR aperta e mergeata in `main`.
+
+---
+
+## FASE 9 — (Opzionale, "best architecture") CI su GitHub Actions
+
+Non richiesto, ma alza nettamente la qualità percepita e previene regressioni.
+
+**Cosa creare:** `.github/workflows/ci.yml` che, a ogni push/PR:
+1. installa dipendenze,
+2. esegue i test (`pytest`),
+3. costruisce l'immagine Docker (build di verifica).
+
+Se lo aggiungi, il badge "build passing" nel README è un plus.
+
+---
+
+## FASE 10 — Deploy su Google Cloud Run
+
+**Concetto chiave:** Cloud Run esegue **un'immagine**, non `docker compose`. Il compose è per il locale; per il deploy pubblichi l'immagine.
+
+**Percorso A — deploy da sorgente (più semplice, usa il tuo Dockerfile):**
+```bash
+gcloud auth login
+gcloud config set project <PROJECT_ID>
+gcloud run deploy iris-api \
+  --source . \
+  --region <REGIONE> \
+  --allow-unauthenticated
+```
+`gcloud` builda l'immagine (usando il Dockerfile presente) e la pubblica. Al termine stampa l'**URL pubblico**.
+
+**Percorso B — build & push manuale su Artifact Registry, poi deploy dell'immagine:** più controllo, più passaggi. Consigliato solo se vuoi separare build e deploy.
+
+**Punti critici verificati sulla doc ufficiale (non sono opzionali):**
+- Il container **deve** ascoltare su `0.0.0.0` sulla porta definita da `PORT` (default 8080). Il nostro `CMD` con `${PORT}` è già conforme.
+- **Non** impostare tu la variabile `PORT` su Cloud Run: è riservata e iniettata dalla piattaforma.
+- Il filesystem del container su Cloud Run è **in memoria ed effimero**: non contarci per persistere dati (il volume del compose non si applica qui).
+- `--allow-unauthenticated` rende l'URL pubblico (necessario per la consegna). Senza, l'endpoint richiede token.
+
+> Free tier: Cloud Run ha un piano gratuito, ma le quote cambiano nel tempo. Verifica i limiti correnti sulla pagina prezzi di Cloud Run prima di stimare i costi. Configura scale-to-zero (default) per evitare addebiti da idle.
+
+**DoD:** URL pubblico attivo; `curl <URL>/predict` restituisce una predizione.
+
+---
+
+## FASE 11 — Verifica finale & consegna
+
+**Prova di funzionamento** (da allegare come screenshot o output):
+```bash
+curl -X POST <URL_PUBBLICO>/predict \
+  -H "Content-Type: application/json" \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+```
+
+### Checklist di consegna
+- [ ] `docker compose up` avvia il progetto da zero con un solo comando
+- [ ] `GET /` e `POST /predict` funzionano in locale e in cloud
+- [ ] Tutti i file richiesti presenti (`app.py`, `train.py`, `requirements.txt`, `Dockerfile`, `compose.yaml`, `.dockerignore`, `.gitignore`, `README.md`, `model.joblib`*)
+- [ ] Repo GitHub pubblico/consegnabile
+- [ ] ≥1 branch dedicato + ≥1 Pull Request completata in `main`
+- [ ] URL pubblico dell'app funzionante
+- [ ] Prova `/predict` (screenshot o `curl`)
+- [ ] **Nessuna password/chiave** nel repo (verifica anche la history)
+- [ ] Variabili d'ambiente usate dove sensato
+- [ ] README completo e aggiornato con l'URL
+
+`*` la presenza di `model.joblib` nel repo dipende da C2 (sotto).
+
+---
+
+## Criticità del brief da chiarire/decidere PRIMA di partire
+
+Queste non sono errori tuoi: sono ambiguità intrinseche del testo di progetto. Le segnalo per non "inventare" una soluzione arbitraria.
+
+**C1 — Porta 8000 vs Cloud Run.**
+Il brief impone la porta **8000**; Cloud Run però inietta `PORT` (default **8080**) e ignora una porta hard-coded. Se scrivi `--port 8000` fisso, il deploy fallisce con "Container failed to start".
+→ *Soluzione adottata:* Uvicorn legge `${PORT}` con default `8000`. Soddisfa entrambi. Nessuna azione da chiedere.
+
+**C2 — Dove vive `model.joblib`? (da chiarire col docente)**
+Il brief chiede sia di **addestrare nel Dockerfile** (quindi il modello è un artefatto generato al build), sia di **consegnare `model.joblib`** tra i file. C'è tensione con la best practice (gli artefatti binari generati **non** si committano di solito).
+Due opzioni valide:
+- **Opzione A (pulita):** `model.joblib` in `.gitignore`, generato da `docker compose up`; documentato nel README. Repo più pulito.
+- **Opzione B (letterale):** committi `model.joblib` perché il valutatore verifica la presenza fisica del file.
+→ *Cosa chiedere al docente:* «Il file `model.joblib` deve essere fisicamente presente nel repo, oppure è sufficiente che venga generato al build da `train.py`?». In dubbio, **Opzione B** è più sicura ai fini della valutazione.
+
+**C3 — Il volume del compose non ha effetto in cloud.**
+Il requisito "almeno un volume" ha senso solo in locale: Cloud Run non usa `compose.yaml` e ha filesystem effimero. Va bene per soddisfare il requisito, ma **non aspettarti persistenza in cloud**. Nessuna azione, solo consapevolezza.
+
+**C4 — "Variabile d'ambiente" generica.**
+Il brief chiede "almeno una variabile d'ambiente" senza specificare quale. Ho reso significative `APP_ENV`, `MODEL_PATH`, `PORT` (usate dal codice) invece di aggiungerne una fittizia. Nessuna azione richiesta.
+
+---
+
+## Ordine di esecuzione consigliato (percorso critico)
+
+```
+Fase 0  Setup
+Fase 1  Scaffolding + requirements
+Fase 2  train.py            ─┐
+Fase 3  app.py               ├─ testabili in locale senza Docker
+Fase 5  Test locale (venv)  ─┘
+Fase 4  Dockerfile
+Fase 5  Test container
+Fase 6  compose.yaml → `docker compose up`
+Fase 7  .dockerignore / .gitignore / README
+Fase 8  Git + GitHub + branch + PR
+Fase 9  (opz.) CI
+Fase 10 Deploy Cloud Run
+Fase 11 Verifica + consegna
+```
+
+Costruisci e verifica **incrementalmente**: ogni fase ha una DoD misurabile. Non passare alla successiva finché la precedente non è verde.

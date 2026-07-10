@@ -1,0 +1,7 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+*.log
+.pytest_cache/
+# NB: model.joblib NON è ignorato: viene committato (decisione C2 = Opzione B).
