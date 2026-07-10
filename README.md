@@ -2,6 +2,8 @@
 
 [![CI](https://github.com/niclingua/es_legale/actions/workflows/ci.yml/badge.svg)](https://github.com/niclingua/es_legale/actions/workflows/ci.yml)
 
+🌐 **Live demo:** https://es-legale.onrender.com — prova [`/docs`](https://es-legale.onrender.com/docs)
+
 Servizio REST che classifica i fiori **Iris** (setosa / versicolor / virginica) a partire
 dalle 4 misure del fiore. Il modello (scikit-learn `LogisticRegression`) viene **addestrato
 durante la build dell'immagine** e servito da **FastAPI**; il tutto è containerizzato con
@@ -148,7 +150,21 @@ curl -X POST <URL_PUBBLICO>/predict -H "Content-Type: application/json" \
   -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
 ```
 
-**URL pubblico del deploy:** _(da inserire dopo il deploy)_
+**URL pubblico del deploy:** https://es-legale.onrender.com
+
+Prova rapida:
+
+```bash
+curl https://es-legale.onrender.com/
+# {"status":"ok","model_loaded":true}
+
+curl -X POST https://es-legale.onrender.com/predict -H "Content-Type: application/json" \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+# {"class_id":0,"class_name":"setosa"}
+```
+
+> Servizio ospitato su Render (piano Free): dopo un periodo di inattività la prima richiesta
+> può richiedere ~30-50s per il "cold start", poi le risposte sono immediate.
 
 ## Sicurezza
 
