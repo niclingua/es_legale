@@ -1,0 +1,15 @@
+# Blueprint di deploy per Render (https://render.com).
+# Render costruisce l'immagine dal Dockerfile e la pubblica su un URL pubblico.
+# La porta viene gestita da Render tramite la variabile d'ambiente PORT, che il
+# nostro Dockerfile usa gia' (uvicorn --port ${PORT}).
+services:
+  - type: web
+    name: iris-api
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /
+    autoDeploy: true
+    envVars:
+      - key: APP_ENV
+        value: render

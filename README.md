@@ -94,7 +94,21 @@ pytest        # esegue tests/test_api.py
 > (`.github/workflows/ci.yml`) esegue automaticamente i test e una build Docker di verifica.
 > Lo stato è mostrato dal badge in cima a questo README.
 
-## Deploy su Google Cloud Run
+## Deploy su Render (gratuito, senza carta di credito)
+
+Il file `render.yaml` (blueprint) permette il deploy su [Render](https://render.com) leggendo
+direttamente questo repo GitHub e costruendo l'immagine dal `Dockerfile`.
+
+1. Crea un account su render.com (login con GitHub).
+2. **New → Blueprint** → seleziona il repo `es_legale` → Render legge `render.yaml`.
+   In alternativa **New → Web Service** → repo `es_legale` → runtime **Docker** → piano **Free**.
+3. Render costruisce e pubblica il servizio su un URL tipo `https://iris-api-xxxx.onrender.com`.
+
+> Render inietta la variabile `PORT`: il `Dockerfile` la usa già (`uvicorn --port ${PORT}`),
+> quindi nessuna modifica è necessaria. Il piano Free va in sospensione dopo un periodo di
+> inattività e si riattiva alla prima richiesta (qualche secondo di attesa).
+
+## Deploy su Google Cloud Run (alternativa)
 
 Cloud Run esegue **un'immagine** (non `docker compose`): dal `Dockerfile` presente costruisce
 l'immagine e la pubblica su un URL pubblico.
