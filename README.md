@@ -90,17 +90,43 @@ pytest        # esegue tests/test_api.py
 
 ## Deploy su Google Cloud Run
 
-Cloud Run esegue **un'immagine** (non `docker compose`). Deploy da sorgente:
+Cloud Run esegue **un'immagine** (non `docker compose`): dal `Dockerfile` presente costruisce
+l'immagine e la pubblica su un URL pubblico.
+
+### Prerequisiti
+1. Installare **Google Cloud SDK** → `gcloud --version`.
+2. Autenticarsi: `gcloud auth login`.
+3. Avere un **progetto GCP** con billing attivo e la **Cloud Run API** abilitata.
+
+### Deploy (script incluso)
+È disponibile `deploy.sh` che incapsula i comandi:
 
 ```bash
-gcloud auth login
-gcloud config set project <PROJECT_ID>
-gcloud run deploy iris-api --source . --region <REGIONE> --allow-unauthenticated
+PROJECT_ID=mio-progetto REGION=europe-west1 ./deploy.sh
 ```
 
-> Il container ascolta su `0.0.0.0:${PORT}`: `PORT` è iniettata da Cloud Run, **non va
-> impostata manualmente**. Il filesystem su Cloud Run è effimero (il volume del compose vale
-> solo in locale).
+Oppure manualmente:
+
+```bash
+gcloud config set project <PROJECT_ID>
+gcloud run deploy iris-api --source . --region <REGIONE> --allow-unauthenticated --port 8000
+```
+
+Al termine viene stampato l'**URL pubblico** del servizio.
+
+> **Note importanti**
+> - Il container ascolta su `0.0.0.0:${PORT}`: `PORT` è gestita dalla piattaforma, **non
+>   impostarla come variabile a mano**.
+> - Il filesystem su Cloud Run è **effimero**: il volume del `compose.yaml` vale solo in locale.
+> - `--allow-unauthenticated` rende l'endpoint pubblico (necessario per la consegna).
+> - Verifica il **free tier** corrente sulla pagina prezzi di Cloud Run; lo scale-to-zero
+>   (default) evita addebiti da idle.
+
+### Prova post-deploy
+```bash
+curl -X POST <URL_PUBBLICO>/predict -H "Content-Type: application/json" \
+  -d '{"sepal_length":5.1,"sepal_width":3.5,"petal_length":1.4,"petal_width":0.2}'
+```
 
 **URL pubblico del deploy:** _(da inserire dopo il deploy)_
 
@@ -121,8 +147,11 @@ gcloud run deploy iris-api --source . --region <REGIONE> --allow-unauthenticated
 ├── requirements.txt   # dipendenze con versioni pinnate
 ├── Dockerfile         # build: install → train → serve (non-root)
 ├── compose.yaml       # orchestrazione locale (porta, env, volume)
+├── deploy.sh          # script di deploy su Cloud Run
 ├── .dockerignore
+├── .gcloudignore      # esclusioni per il deploy da sorgente
 ├── .gitignore
+├── .github/workflows/ci.yml  # CI: pytest + docker build
 ├── tests/test_api.py  # test degli endpoint
 └── context.txt        # documento di progettazione tecnica
 ```
