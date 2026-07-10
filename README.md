@@ -1,5 +1,7 @@
 # Iris Classifier API
 
+[![CI](https://github.com/niclingua/es_legale/actions/workflows/ci.yml/badge.svg)](https://github.com/niclingua/es_legale/actions/workflows/ci.yml)
+
 Servizio REST che classifica i fiori **Iris** (setosa / versicolor / virginica) a partire
 dalle 4 misure del fiore. Il modello (scikit-learn `LogisticRegression`) viene **addestrato
 durante la build dell'immagine** e servito da **FastAPI**; il tutto è containerizzato con
@@ -87,6 +89,10 @@ python train.py
 uvicorn app:app --port 8000
 pytest        # esegue tests/test_api.py
 ```
+
+> **CI** — ad ogni push e pull request verso `main`, GitHub Actions
+> (`.github/workflows/ci.yml`) esegue automaticamente i test e una build Docker di verifica.
+> Lo stato è mostrato dal badge in cima a questo README.
 
 ## Deploy su Google Cloud Run
 
