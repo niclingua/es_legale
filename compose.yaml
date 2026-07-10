@@ -1,0 +1,14 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      APP_ENV: "local"
+      MODEL_PATH: "/app/model.joblib"
+    volumes:
+      - model-data:/app/artifacts   # volume nominato: persistenza artefatti/log in locale
+    restart: unless-stopped
+
+volumes:
+  model-data:
